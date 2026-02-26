@@ -25,7 +25,11 @@ import envs.utils.rotation_utils as ru
 
 
 def get_camera_matrix(width, height, fov):
-    """Returns a camera matrix from image size and fov."""
+    """Returns a camera matrix from image size and fov.
+    根据图像尺寸和视场角(FOV)计算相机内参矩阵。
+    xc, zc: 图像中心坐标
+    f: 焦距 (focal length)
+    """
     xc = (width - 1.) / 2.
     zc = (height - 1.) / 2.
     f = (width / 2.) / np.tan(np.deg2rad(fov / 2.))
@@ -36,20 +40,22 @@ def get_camera_matrix(width, height, fov):
 
 def get_point_cloud_from_z(Y, camera_matrix, scale=1):
     """Projects the depth image Y into a 3D point cloud.
+    将深度图 Y 投影为 3D 点云。
     Inputs:
-        Y is ...xHxW
-        camera_matrix
+        Y is ...xHxW (深度图)
+        camera_matrix (相机内参)
     Outputs:
-        X is positive going right
-        Y is positive into the image
-        Z is positive up in the image
-        XYZ is ...xHxWx3
+        X is positive going right (X轴向右为正)
+        Y is positive into the image (Y轴向内为正，即深度方向)
+        Z is positive up in the image (Z轴向上为正)
+        XYZ is ...xHxWx3 (点云坐标)
     """
     x, z = np.meshgrid(np.arange(Y.shape[-1]),
                        np.arange(Y.shape[-2] - 1, -1, -1))
     for _ in range(Y.ndim - 2):
         x = np.expand_dims(x, axis=0)
         z = np.expand_dims(z, axis=0)
+    # 根据针孔相机模型反推 X 和 Z 坐标
     X = (x[::scale, ::scale] - camera_matrix.xc) * \
         Y[::scale, ::scale] / camera_matrix.f
     Z = (z[::scale, ::scale] - camera_matrix.zc) * \
@@ -63,13 +69,15 @@ def get_point_cloud_from_z(Y, camera_matrix, scale=1):
 def transform_camera_view(XYZ, sensor_height, camera_elevation_degree):
     """
     Transforms the point cloud into geocentric frame to account for
-    camera elevation and angle
+    camera elevation and angle.
+    根据相机的俯仰角(elevation)和安装高度(sensor_height)转换点云坐标系。
+    主要是为了校正相机抬头或低头带来的视角倾斜，并加上相机高度。
     Input:
-        XYZ                     : ...x3
-        sensor_height           : height of the sensor
-        camera_elevation_degree : camera elevation to rectify.
+        XYZ                     : ...x3 (原始点云)
+        sensor_height           : height of the sensor (相机高度)
+        camera_elevation_degree : camera elevation to rectify. (相机俯仰角)
     Output:
-        XYZ : ...x3
+        XYZ : ...x3 (转换后的点云)
     """
     R = ru.get_r_matrix(
         [1., 0., 0.], angle=np.deg2rad(camera_elevation_degree))
@@ -81,10 +89,11 @@ def transform_camera_view(XYZ, sensor_height, camera_elevation_degree):
 def transform_pose(XYZ, current_pose):
     """
     Transforms the point cloud into geocentric frame to account for
-    camera position
+    camera position.
+    将点云从局部相机坐标系转换到世界坐标系（基于当前智能体的位姿）。
     Input:
         XYZ                     : ...x3
-        current_pose            : camera position (x, y, theta (radians))
+        current_pose            : camera position (x, y, theta (radians)) (智能体位置和朝向)
     Output:
         XYZ : ...x3
     """
@@ -96,7 +105,9 @@ def transform_pose(XYZ, current_pose):
 
 
 def bin_points(XYZ_cms, map_size, z_bins, xy_resolution):
-    """Bins points into xy-z bins
+    """Bins points into xy-z bins.
+    将点云投影到三维网格（体素）中，统计每个网格内的点数。
+    用于生成占据栅格地图 (Occupancy Grid Map)。
     XYZ_cms is ... x H x W x3
     Outputs is ... x map_size x map_size x (len(z_bins)+1)
     """
@@ -106,17 +117,21 @@ def bin_points(XYZ_cms, map_size, z_bins, xy_resolution):
     counts = []
     for XYZ_cm in XYZ_cms:
         isnotnan = np.logical_not(np.isnan(XYZ_cm[:, :, 0]))
+        # 将连续坐标转换为离散的网格索引
         X_bin = np.round(XYZ_cm[:, :, 0] / xy_resolution).astype(np.int32)
         Y_bin = np.round(XYZ_cm[:, :, 1] / xy_resolution).astype(np.int32)
         Z_bin = np.digitize(XYZ_cm[:, :, 2], bins=z_bins).astype(np.int32)
 
+        # 过滤掉超出地图范围的点
         isvalid = np.array([X_bin >= 0, X_bin < map_size, Y_bin >= 0,
                             Y_bin < map_size,
                             Z_bin >= 0, Z_bin < n_z_bins, isnotnan])
         isvalid = np.all(isvalid, axis=0)
 
+        # 展平索引计算
         ind = (Y_bin * map_size + X_bin) * n_z_bins + Z_bin
         ind[np.logical_not(isvalid)] = 0
+        # 统计每个 bin 中的点数量
         count = np.bincount(ind.ravel(), isvalid.ravel().astype(np.int32),
                             minlength=map_size * map_size * n_z_bins)
         counts = np.reshape(count, [map_size, map_size, n_z_bins])
@@ -127,8 +142,9 @@ def bin_points(XYZ_cms, map_size, z_bins, xy_resolution):
 
 def bin_semantic_points(XYZ_cms, semantic, map_size, semantic_map_len, xy_resolution):
     """Bins points into xy-z bins
+    将带有语义信息的点云投影到三维网格中。
     XYZ_cms is ... x H x W x3
-    semantic is ... x H x W
+    semantic is ... x H x W (每个点的语义类别)
     Outputs is ... x map_size x map_size x len
     """
     # print("XYZ_cms: ",XYZ_cms.shape) #128*128*3
@@ -174,8 +190,9 @@ def bin_semantic_points(XYZ_cms, semantic, map_size, semantic_map_len, xy_resolu
 
 def get_point_cloud_from_z_t(Y_t, camera_matrix, device, scale=1):
     """Projects the depth image Y into a 3D point cloud.
+    (PyTorch Version) 将深度图 Y 投影为 3D 点云。
     Inputs:
-        Y is ...xHxW
+        Y is ...xHxW (深度图 tensor)
         camera_matrix
     Outputs:
         X is positive going right
@@ -204,7 +221,8 @@ def get_point_cloud_from_z_t(Y_t, camera_matrix, device, scale=1):
 def transform_camera_view_t(_XYZ, sensor_height, camera_elevation_degree, device, need_transmatrix=False):
     """
     Transforms the point cloud into geocentric frame to account for
-    camera elevation and angle
+    camera elevation and angle.
+    (PyTorch Version) 根据相机的俯仰角和高度转换点云坐标。
     Input:
         XYZ                     : ...x3
         sensor_height           : height of the sensor
@@ -229,7 +247,8 @@ def transform_camera_view_t(_XYZ, sensor_height, camera_elevation_degree, device
 def transform_pose_t(_XYZ, current_pose, device, need_transmatrix=False):
     """
     Transforms the point cloud into geocentric frame to account for
-    camera position
+    camera position.
+    (PyTorch Version) 将点云从局部坐标系转换到世界坐标系（基于智能体位姿）。
     Input:
         XYZ                     : ...x3
         current_pose            : camera position (x, y, theta (radians))
@@ -256,11 +275,13 @@ def transform_pose_t(_XYZ, current_pose, device, need_transmatrix=False):
 def splat_feat_nd(init_grid, feat, coords):
     """
     Args:
-        init_grid: B X nF X W X H X D X ..
-        feat: B X nF X nPt
-        coords: B X nDims X nPt in [-1, 1]
+        init_grid: B X nF X W X H X D X .. (初始化的特征网格体素)
+        feat: B X nF X nPt (每个点的特征)
+        coords: B X nDims X nPt in [-1, 1] (每个点在网格中的归一化坐标)
     Returns:
-        grid: B X nF X W X H X D X ..
+        grid: B X nF X W X H X D X .. (更新后的特征网格)
+    此函数使用了类似双线性插值(bilinear interpolation)的 splatting 技术，
+    将点的特征"散射"到最近的网格顶点上。
     """
     # init_grid:  [1, 17, 100, 100, 48]
     wts_dim = []
@@ -280,6 +301,7 @@ def splat_feat_nd(init_grid, feat, coords):
         wts_d = []
 
         for ix in [0, 1]:
+            # 计算相邻顶点的索引 (pos_ix) 和权重 (wts_ix)
             pos_ix = torch.floor(pos) + ix # floor是向下取整.
             safe_ix = (pos_ix > 0) & (pos_ix < grid_dims[d])
             safe_ix = safe_ix.type(pos.dtype)
@@ -296,7 +318,7 @@ def splat_feat_nd(init_grid, feat, coords):
         wts_dim.append(wts_d)
 
     l_ix = [[0, 1] for d in range(n_dims)]
-    # itertools.product  笛卡尔积
+    # itertools.product  笛卡尔积，遍历所有相邻组合
     for ix_d in itertools.product(*l_ix):
         wts = torch.ones_like(wts_dim[0][0])
         index = torch.zeros_like(wts_dim[0][0])
@@ -305,6 +327,7 @@ def splat_feat_nd(init_grid, feat, coords):
             wts = wts * wts_dim[d][ix_d[d]]
 
         index = index.long()
+        # 使用 scatter_add 将特征累加到网格中
         grid_flat.scatter_add_(2, index.expand(-1, F, -1), feat * wts)
         grid_flat = torch.round(grid_flat)
 

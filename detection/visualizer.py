@@ -332,11 +332,13 @@ class VisImage:
 class Visualizer:
     """
     Visualizer that draws data about detection/segmentation on images.
+    (Visualizer 类：用于在图像上绘制检测或分割数据)
 
     It contains methods like `draw_{text,box,circle,line,binary_mask,polygon}`
     that draw primitive objects to images, as well as high-level wrappers like
     `draw_{instance_predictions,sem_seg,panoptic_seg_predictions,dataset_dict}`
     that draw composite data in some pre-defined style.
+    (包含了绘制基本图形（如文本、框、圆、线、掩码、多边形）的方法，以及绘制复杂预测结果的高级包装器)
 
     Note that the exact visualization style for the high-level wrappers are subject to change.
     Style such as color, opacity, label contents, visibility of labels, or even the visibility
@@ -351,21 +353,26 @@ class Visualizer:
 
     This visualizer focuses on high rendering quality rather than performance. It is not
     designed to be used for real-time applications.
+    (该类注重渲染质量而非性能，不建议主要用于实时应用)
     """
 
     # TODO implement a fast, rasterized version using OpenCV
 
     def __init__(self, img_rgb, metadata=None, scale=1.0, instance_mode=ColorMode.IMAGE):
         """
+        初始化 Visualizer
         Args:
             img_rgb: a numpy array of shape (H, W, C), where H and W correspond to
                 the height and width of the image respectively. C is the number of
                 color channels. The image is required to be in RGB format since that
                 is a requirement of the Matplotlib library. The image is also expected
                 to be in the range [0, 255].
+                (输入图像：RGB 格式的 numpy 数组，值范围 0-255)
             metadata (Metadata): dataset metadata (e.g. class names and colors)
+                (元数据：如类别名称、颜色等)
             instance_mode (ColorMode): defines one of the pre-defined style for drawing
                 instances on an image.
+                (实例模式：定义绘制实例的预定义样式)
         """
         self.img = np.asarray(img_rgb).clip(0, 255).astype(np.uint8)
         if metadata is None:
@@ -1118,21 +1125,29 @@ class Visualizer:
         self, binary_mask, color=None, *, edge_color=None, text=None, label_mode='1', alpha=0.1, anno_mode=['Mask'], area_threshold=10
     ):
         """
+        绘制带有数字标记的二进制掩码 (用于 Set-of-Mark 等)
         Args:
             binary_mask (ndarray): numpy array of shape (H, W), where H is the image height and
                 W is the image width. Each value in the array is either a 0 or 1 value of uint8
                 type.
+                (二进制掩码：H x W，uint8 类型，0或1)
             color: color of the mask. Refer to `matplotlib.colors` for a full list of
                 formats that are accepted. If None, will pick a random color.
+                (掩码颜色)
             edge_color: color of the polygon edges. Refer to `matplotlib.colors` for a
                 full list of formats that are accepted.
+                (边缘颜色)
             text (str): if None, will be drawn on the object
+                (要绘制的文本内容，通常是对象 ID)
             alpha (float): blending efficient. Smaller values lead to more transparent masks.
+                (透明度：值越小越透明)
             area_threshold (float): a connected component smaller than this area will not be shown.
+                (面积阈值：小于该阈值的区域将不显示)
 
         Returns:
             output (VisImage): image object with mask drawn.
         """
+        # 如果未指定颜色，则随机选取颜色
         if color is None:
             randint = random.randint(0, len(self.color_proposals)-1)
             color = self.color_proposals[randint]
@@ -1140,13 +1155,16 @@ class Visualizer:
 
         has_valid_segment = True
         binary_mask = binary_mask.astype("uint8")  # opencv needs uint8
+        # 将二进制掩码转换为通用掩码对象 (处理多边形等)
         mask = GenericMask(binary_mask, self.output.height, self.output.width)
         shape2d = (binary_mask.shape[0], binary_mask.shape[1])
         # bbox = mask.bbox()
 
+        # 模式1: 绘制掩码 (Mask)
         if 'Mask' in anno_mode:
             if not mask.has_holes:
                 # draw polygons for regular masks
+                # 对于规则掩码，绘制多边形
                 for segment in mask.polygons:
                     area = mask_util.area(mask_util.frPyObjects([segment], shape2d[0], shape2d[1]))
                     if area < (area_threshold or 0):
@@ -1157,6 +1175,7 @@ class Visualizer:
             else:
                 # TODO: Use Path/PathPatch to draw vector graphics:
                 # https://stackoverflow.com/questions/8919719/how-to-plot-a-complex-polygon
+                # 对于有孔洞的掩码，直接使用 alpha 混合绘制
                 rgba = np.zeros(shape2d + (4,), dtype="float32")
                 rgba[:, :, :3] = color
                 rgba[:, :, 3] = (mask.mask == 1).astype("float32") * alpha
@@ -1164,6 +1183,7 @@ class Visualizer:
                 self.output.ax.imshow(rgba, extent=(0, self.output.width, self.output.height, 0))
 
         if 'Box' in anno_mode:
+            # 绘制边界框
             self.draw_box(bbox, edge_color=color, alpha=0.75)
 
         if 'Mark' in anno_mode:
@@ -1174,6 +1194,7 @@ class Visualizer:
         if text is not None and has_valid_segment:
             # lighter_color = tuple([x*0.2 for x in color])
             lighter_color = [1,1,1] # self._change_color_brightness(color, brightness_factor=0.7)
+            # 在掩码中心绘制数字/文本
             self._draw_number_in_mask(binary_mask, text, lighter_color, label_mode)
         return self.output
 
@@ -1332,26 +1353,31 @@ class Visualizer:
     def _draw_number_in_mask(self, binary_mask, text, color, label_mode='1'):
         """
         Find proper places to draw text given a binary mask.
+        (在二进制掩码的合适位置绘制文本)
         """
 
         def number_to_string(n):
+            """将数字转换为字母表示 (如 1->a, 26->z, 27->aa)"""
             chars = []
             while n:
                 n, remainder = divmod(n-1, 26)
                 chars.append(chr(97 + remainder))
             return ''.join(reversed(chars))
 
+        # 使用距离变换找到掩码内部最"深"的点，作为绘制中心
         binary_mask = np.pad(binary_mask, ((1, 1), (1, 1)), 'constant')
         mask_dt = cv2.distanceTransform(binary_mask, cv2.DIST_L2, 0)
         mask_dt = mask_dt[1:-1, 1:-1]
         max_dist = np.max(mask_dt)
         coords_y, coords_x = np.where(mask_dt == max_dist)  # coords is [y, x]
 
+        # 标签模式处理 (数字 vs 字母)
         if label_mode == 'a':
             text = number_to_string(int(text))
         else:
             text = text
 
+        # 在计算出的中心点绘制文本
         self.draw_text(text, (coords_x[len(coords_x)//2] + 2, coords_y[len(coords_y)//2] - 6), font_size=13, color=color)
 
         # TODO sometimes drawn on wrong objects. the heuristics here can improve.

@@ -21,39 +21,67 @@ color_proposals = [list(mcolors.hex2color(color)) for color in css4_colors.value
 # with open('css4_colors.json', 'w', encoding='utf-8') as f:
 #     json.dump(color_dict, f, ensure_ascii=False, indent=4)
 def read_pkl(path_file):
+    """
+    读取 pickle 文件
+    """
     output = open(path_file, 'rb')
     res = pkl.load(output)
     return res
+
 def mapObjects_2D(cam_intrinsic, extrinsic_inv,image_height,image_width,points):
+    """
+    将 3D 点云投影生成 2D 实例分割掩码 (Mapping 3D points to 2D instance masks)
+    cam_intrinsic: 相机内参矩阵
+    extrinsic_inv: 相机外参逆矩阵 (世界 -> 相机)
+    image_height/width: 图像尺寸
+    points: 对象点云字典 {id: points_array}
+    """
     kernel = np.ones((15, 15), np.uint8)
+    # 深度缓冲区，用于处理遮挡
     depth_buffer = np.zeros((image_height,image_width), dtype=np.float32)
     mask = -np.ones((image_height,image_width), dtype=np.int32)
+    
     for j,point in points.items():
+        # 1. 坐标转换: 世界坐标 -> 相机坐标
         points_homogeneous = np.hstack(((point), np.ones((point.shape[0], 1))))
         points_homogeneous = (extrinsic_inv @ points_homogeneous.T).T[:, :3]
-        points_homogeneous[:, [1, 2]] = points_homogeneous[:, [2, 1]]
+        points_homogeneous[:, [1, 2]] = points_homogeneous[:, [2, 1]] # 坐标轴调整
         points_camera = cam_intrinsic @ points_homogeneous.T
         points_camera = points_camera.T
+        
+        # 2. 投影计算像素坐标 (u, v)
         z = points_camera[:,-1]
         u = (points_camera[:,0] / z).astype(np.int32)
         v = (image_height - 1 - points_camera[:,1] / z).astype(np.int32)
         # v = (image_height - points_camera[:,1] / z).astype(np.int32)
         # v = image_height - v
+        
+        # 3. 筛选有效点 (在图像范围内且 Z > 0)
         index = np.where((u>=0)*(u<image_width)*(v>=0)*(v<image_height)*(z>=0))[0]
+        
+        # 4. 深度缓冲检测 (处理遮挡)
         index_buffer = np.where((depth_buffer[v[index],u[index]]==0) | (depth_buffer[v[index],u[index]]>z[index]))[0]
         if index[index_buffer].shape[0] > 0:
             mask1 = np.zeros((image_height,image_width), dtype=np.uint8)
             mask1[v[index][index_buffer],u[index][index_buffer]] = 1
+            
+            # 5. 形态学闭运算 (填补空洞)
             closed_mask = cv2.morphologyEx(mask1, cv2.MORPH_CLOSE, kernel)
+            
+            # 6. 更新深度缓冲和掩码
             depth_buffer[np.where(closed_mask!=0)[0],np.where(closed_mask!=0)[1]] = np.mean(z[index][index_buffer])
             mask[np.where(closed_mask!=0)[0],np.where(closed_mask!=0)[1]] = j
         # del points_homogeneous, points_camera, index, index_buffer, mask1, closed_mask
     return mask
 def mapObjects(cam_intrinsic, extrinsic_inv,image_height,image_width,objects):
+    """
+    将体素对象投影生成 2D 掩码 (使用体素中心点)
+    """
     kernel = np.ones((15, 15), np.uint8)
     depth_buffer = np.zeros((image_height,image_width), dtype=np.float32)
     mask = -np.ones((image_height,image_width), dtype=np.int32)
     for j in range(len(objects)):
+        # 提取体素中心点
         point =  extractVoxelCenterfromVoxelmap(objects[j]['voxel_index'])
         points_homogeneous = np.hstack(((point), np.ones((point.shape[0], 1))))
         points_homogeneous = (extrinsic_inv @ points_homogeneous.T).T[:, :3]
@@ -75,11 +103,19 @@ def mapObjects(cam_intrinsic, extrinsic_inv,image_height,image_width,objects):
             mask[np.where(closed_mask!=0)[0],np.where(closed_mask!=0)[1]] = j
         # del points_homogeneous, points_camera, index, index_buffer, mask1, closed_mask
     return mask
+
 def readImage(path):
+    """
+    读取图像并转换为 NumPy 数组
+    """
     image=Image.open(path)
     image_np=np.array(image)
     return image_np
+
 def dealMask(mask,idxs,image_height,image_width):
+    """
+    处理合并的掩码：分离各个实例的掩码，并按面积排序
+    """
     masks=[]
     id=[]
     area=[]
@@ -91,10 +127,14 @@ def dealMask(mask,idxs,image_height,image_width):
             masks.append(mask1)
             id.append(i)
             area.append(index.shape[0])
+    # 按面积排序，小的覆盖大的? (这里是升序，所以draw的时候后画的覆盖先画的)
     area=np.array(area)
     index=np.argsort(area)
     return np.array(masks)[index],np.array(id)[index]
 def dealMaskReplica(mask,length,image_height,image_width):
+    """
+    针对 Replica 数据集的掩码处理，处理方式同 dealMask
+    """
     masks=[]
     id=[]
     area=[]
@@ -109,7 +149,11 @@ def dealMaskReplica(mask,length,image_height,image_width):
     area=np.array(area)
     index=np.argsort(area)
     return np.array(masks)[index],np.array(id)[index]
+
 def visualIndicated(data):
+    """
+    可视化指定的两个点云对象 (用于调试)
+    """
     point1=data[33]['pcd_np']
     point2=data[36]['pcd_np']
     pcd1=o3d.geometry.PointCloud()
@@ -119,7 +163,11 @@ def visualIndicated(data):
     pcd2.points=o3d.utility.Vector3dVector(point2)
     pcd2.paint_uniform_color([0, 1, 0])
     o3d.visualization.draw_geometries([pcd2])
+
 def generateMaskMark(image_list,masks,image_origin_dir,output_path,object_length,label_mode='1', alpha=0.3, anno_mode=['Mask','Mark']):
+    """
+    生成带有掩码和标记的图像，并保存
+    """
     for i in range(len(image_list)):
         image_ori=readImage(os.path.join(image_origin_dir,image_list[i]))
         visual = Visualizer(image_ori, metadata=metadata)
@@ -131,18 +179,32 @@ def generateMaskMark(image_list,masks,image_origin_dir,output_path,object_length
         image.save(os.path.join(output_path,image_list[i])) 
         print("save success")
         del visual
+
 def generateProjectMatrix(intrinsic,extrinsic):
+    # 生成投影矩阵 P = K * [R|t]
     extrinsic =  intrinsic @ extrinsic[:3,:]
     return extrinsic
 def generateSoMImage(cfg,image_objects_dict,objects,reses,label_mode='1', alpha=0.3, anno_mode=['Mask','Mark']):
+    """
+    批量生成 Set-of-Mark (SoM) 图像
+    image_objects_dict: 图像路径到相关对象 ID 的映射
+    objects: 所有对象的列表
+    reses: 图像结果字典 (包含 RGB, 相机内参, 位姿)
+    """
     for img,idxs in image_objects_dict.items():
         res = reses[int(img.split('/')[-1].split('.')[0])]
         image_rgb,cam_K,pose = res[0].cpu().numpy(),res[2][:3,:3],res[3].cpu().numpy()
         visual = Visualizer(image_rgb, metadata=metadata)
+        
+        # 1. 获取相关对象的点云
         points={}
         for idx in idxs :
             points[idx] = selectPointsFromVoxel(objects[idx])
+            
+        # 2. 投影生成掩码
         mask=mapObjects_2D(cam_K[:3, :3], np.linalg.inv(pose),cfg.screen_h,cfg.screen_w,points)
+        
+        # 3. 处理并绘制掩码
         mask_new,id=dealMask(mask,points.keys(),cfg.screen_h,cfg.screen_w)
         for j in range(len(id)):
             demo = visual.draw_binary_mask_with_number(mask_new[j],color=color_proposals[id[j]%len(color_proposals)],text=str(id[j]), label_mode=label_mode, alpha=alpha, anno_mode=anno_mode)
@@ -151,11 +213,24 @@ def generateSoMImage(cfg,image_objects_dict,objects,reses,label_mode='1', alpha=
         image.save(img) 
         del visual
     return True
+
 def generateSomPrompt(cfg,color_path,som_path,pose,cam_K,objects,label_mode='1', alpha=0.3, anno_mode=['Mask','Mark']):
+    """
+    生成单张 SoM 提示图像
+    color_path: 原始彩色图像路径
+    som_path: 结果保存目录
+    pose: 相机位姿 4x4
+    cam_K: 相机内参 3x3
+    objects: 对象库
+    """
     image_ori=readImage(color_path)
     visual = Visualizer(image_ori, metadata=metadata)
     # P=generateProjectMatrix(cam_K,np.linalg.inv(pose))
+    
+    # 投影所有对象到当前视角
     mask=mapObjects(cam_K,np.linalg.inv(pose),cfg.env_frame_height,cfg.env_frame_width,objects)
+    
+    # 处理掩码并绘制
     mask_new,id=dealMaskReplica(mask,len(objects),cfg.env_frame_height,cfg.env_frame_width)
     for j in range(len(id)):
         demo = visual.draw_binary_mask_with_number(mask_new[j],color=color_proposals[id[j]%len(color_proposals)],text=str(id[j]), label_mode=label_mode, alpha=alpha, anno_mode=anno_mode)
@@ -165,7 +240,11 @@ def generateSomPrompt(cfg,color_path,som_path,pose,cam_K,objects,label_mode='1',
         image.save(os.path.join(som_path, str(color_path).split('/')[-1].split('.')[0]+'.png')) 
         del visual
         return True
+
 def somForMerge(cfg,image_np,pose,cam_K,points,som_path,idx,once,label_mode='1', alpha=0.3, anno_mode=['Mask','Mark']):
+    """
+    生成用于合并的 SoM 图像 (调试用)
+    """
     visual = Visualizer(image_np, metadata=metadata)
     mask=mapObjects_2D(cam_K[:3, :3], np.linalg.inv(pose),cfg.image_height,cfg.image_width,points)
     mask_new,id=dealMask(mask,len(points),cfg.image_height,cfg.image_width)
